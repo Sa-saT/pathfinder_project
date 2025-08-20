@@ -1,0 +1,66 @@
+# Pathfinder Audio App - Cursor Rules
+
+## プロジェクト概要
+- Nuxt4 + Vercel Blob + PostgreSQL 音源アプリ
+- 認証: JWT + bcrypt
+- 状態管理: Pinia + sessionStorage
+- データベース: DDL直接実行（ORM不使用）
+- ファイルストレージ: 開発環境はローカル、本番はVercel Blob
+
+## 技術スタック
+- **フロントエンド**: Nuxt 4, Vue 3, TypeScript, Pinia
+- **バックエンド**: Nuxt Nitro, Node.js
+- **データベース**: PostgreSQL
+- **ストレージ**: Vercel Blob (本番), ローカルファイルシステム (開発)
+- **認証**: JWT, bcrypt
+- **パッケージマネージャー**: pnpm
+
+## コーディング規約
+- TypeScript厳格モード
+- Vue 3 Composition API
+- Nuxt 4の規約に準拠
+- 日本語コメント推奨
+- エラーハンドリングは適切に実装
+
+## ファイル構造
+- `app/`: フロントエンド（Vue、Pinia、ページ、コンポーネント）
+- `server/`: バックエンド（API、ミドルウェア、ユーティリティ）
+- `database/`: SQLスキーマと初期化スクリプト
+- `storage/`: ローカル開発用ファイル保存（uploads, thumbnails）
+- `public/`: 静的ファイル
+
+## 命名規則
+- コンポーネント: PascalCase (例: AuthForm.vue)
+- ファイル: kebab-case (例: auth-form.vue)
+- 関数: camelCase (例: handleAuthSuccess)
+- 定数: UPPER_SNAKE_CASE (例: JWT_SECRET)
+- データベーステーブル: snake_case (例: login_accounts)
+
+## API設計原則
+- RESTful API設計
+- 適切なHTTPステータスコード
+- エラーレスポンスの統一
+- JWT認証の適切な実装
+
+## 状態管理
+- Piniaストアを使用
+- sessionStorageでページリロード時の状態保持
+- ストアは`app/stores/`ディレクトリに配置
+
+## セキュリティ
+- パスワードはbcryptでハッシュ化
+- JWTトークンの適切な管理
+- ファイルアップロードの検証
+- SQLインジェクション対策
+
+## 開発環境
+- ローカル開発時は`storage/`ディレクトリを使用
+- 本番環境ではVercel Blobを使用
+- 環境変数は`.env`で管理
+- データベース接続は`runtimeConfig`で管理
+
+## テストとデバッグ
+- 開発サーバー起動: `pnpm dev`
+- データベース初期化: `psql -d pathfinder -f database/init.sql`
+- ログは適切に出力
+- エラーハンドリングは詳細に実装

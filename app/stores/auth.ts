@@ -1,10 +1,5 @@
 import { defineStore } from 'pinia'
 
-// $fetchの型定義
-declare global {
-  function $fetch<T = any>(request: string, options?: any): Promise<T>
-}
-
 interface User {
   id: string
   email: string

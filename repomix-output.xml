@@ -44,11 +44,45 @@ app/
   assets/
     css/
       style.css
+  components/
+    AuthForm.vue
+    SoundPlayer.vue
+    SoundUpload.vue
+  layouts/
+    default.vue
   pages/
     index.vue
+  stores/
+    auth.ts
+    sounds.ts
   app.vue
+database/
+  init.sql
 public/
   robots.txt
+server/
+  api/
+    auth/
+      login.post.ts
+      me.get.ts
+      register.post.ts
+    sounds/
+      [id]/
+        download.get.ts
+        stream.get.ts
+      list.get.ts
+      metadata.post.ts
+      upload-local.post.ts
+      upload-url.post.ts
+  utils/
+    db.ts
+    localStorage.ts
+storage/
+  thumbnails/
+    .gitkeep
+  uploads/
+    .gitkeep
+.cursorrules
 .gitignore
 nuxt.config.ts
 package.json
@@ -59,36 +93,836 @@ tsconfig.json
 <files>
 This section contains the contents of the repository's files.
 
+<file path="app/stores/auth.ts">
+import { defineStore } from 'pinia'
+
+interface User {
+  id: string
+  email: string
+  displayName?: string
+  createdAt?: string
+}
+
+interface AuthState {
+  user: User | null
+  isAuthenticated: boolean
+  loading: boolean
+}
+
+export const useAuthStore = defineStore('auth', {
+  state: (): AuthState => {
+    // sessionStorageから初期状態を復元
+    if (typeof window !== 'undefined') {
+      const savedUser = sessionStorage.getItem('auth_user')
+      const savedAuth = sessionStorage.getItem('auth_isAuthenticated')
+      
+      if (savedUser && savedAuth === 'true') {
+        return {
+          user: JSON.parse(savedUser),
+          isAuthenticated: true,
+          loading: false
+        }
+      }
+    }
+    
+    return {
+      user: null,
+      isAuthenticated: false,
+      loading: false
+    }
+  },
+
+  getters: {
+    currentUser: (state) => state.user,
+    isLoggedIn: (state) => state.isAuthenticated
+  },
+
+  actions: {
+    async login(email: string, password: string) {
+      this.loading = true
+      try {
+        const response = await $fetch('/api/auth/login', {
+          method: 'POST',
+          body: { email, password }
+        }) as any
+
+        if (response.success) {
+          this.user = response.user
+          this.isAuthenticated = true
+          
+          // sessionStorageに保存
+          if (typeof window !== 'undefined') {
+            sessionStorage.setItem('auth_user', JSON.stringify(response.user))
+            sessionStorage.setItem('auth_isAuthenticated', 'true')
+          }
+          
+          return { success: true, user: response.user }
+        }
+        return { success: false, error: 'Login failed' }
+      } catch (error: any) {
+        return { success: false, error: error.data?.message || 'Login failed' }
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async register(email: string, password: string, displayName?: string) {
+      this.loading = true
+      try {
+        const response = await $fetch('/api/auth/register', {
+          method: 'POST',
+          body: { email, password, displayName }
+        }) as any
+
+        if (response.success) {
+          this.user = response.user
+          this.isAuthenticated = true
+          
+          // sessionStorageに保存
+          if (typeof window !== 'undefined') {
+            sessionStorage.setItem('auth_user', JSON.stringify(response.user))
+            sessionStorage.setItem('auth_isAuthenticated', 'true')
+          }
+          
+          return { success: true, user: response.user }
+        }
+        return { success: false, error: 'Registration failed' }
+      } catch (error: any) {
+        return { success: false, error: error.data?.message || 'Registration failed' }
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async checkAuth() {
+      try {
+        const response = await $fetch('/api/auth/me') as any
+        if (response.success) {
+          this.user = response.user
+          this.isAuthenticated = true
+          
+          // sessionStorageに保存
+          if (typeof window !== 'undefined') {
+            sessionStorage.setItem('auth_user', JSON.stringify(response.user))
+            sessionStorage.setItem('auth_isAuthenticated', 'true')
+          }
+          
+          return true
+        }
+        return false
+      } catch (error) {
+        this.user = null
+        this.isAuthenticated = false
+        
+        // sessionStorageから削除
+        if (typeof window !== 'undefined') {
+          sessionStorage.removeItem('auth_user')
+          sessionStorage.removeItem('auth_isAuthenticated')
+        }
+        
+        return false
+      }
+    },
+
+    logout() {
+      // Cookieを削除
+      document.cookie = 'Authorization=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;'
+      this.user = null
+      this.isAuthenticated = false
+      
+      // sessionStorageから削除
+      if (typeof window !== 'undefined') {
+        sessionStorage.removeItem('auth_user')
+        sessionStorage.removeItem('auth_isAuthenticated')
+      }
+    }
+  }
+})
+</file>
+
+<file path="app/stores/sounds.ts">
+import { defineStore } from 'pinia'
+
+interface Sound {
+  id: string
+  title: string
+  description?: string
+  tags?: string[]
+  durationSeconds?: number
+  bitrateKbps?: number
+  blobUrl: string
+  thumbnailBlobUrl?: string
+  isPublic: boolean
+  createdAt: string
+  author?: {
+    email: string
+    displayName?: string
+  }
+}
+
+interface SoundsState {
+  sounds: Sound[]
+  loading: boolean
+  error: string | null
+}
+
+export const useSoundsStore = defineStore('sounds', {
+  state: (): SoundsState => {
+    // sessionStorageから初期状態を復元
+    if (typeof window !== 'undefined') {
+      const savedSounds = sessionStorage.getItem('sounds_list')
+      if (savedSounds) {
+        try {
+          return {
+            sounds: JSON.parse(savedSounds),
+            loading: false,
+            error: null
+          }
+        } catch (e) {
+          console.warn('Failed to parse saved sounds from sessionStorage')
+        }
+      }
+    }
+    
+    return {
+      sounds: [],
+      loading: false,
+      error: null
+    }
+  },
+
+  getters: {
+    publicSounds: (state) => state.sounds.filter(sound => sound.isPublic),
+    soundsByTag: (state) => (tag: string) => 
+      state.sounds.filter(sound => sound.tags?.includes(tag))
+  },
+
+  actions: {
+    async fetchSounds() {
+      this.loading = true
+      this.error = null
+      try {
+        const response = await $fetch('/api/sounds/list') as any
+        if (response.success) {
+          this.sounds = response.sounds
+          
+          // sessionStorageに保存
+          if (typeof window !== 'undefined') {
+            sessionStorage.setItem('sounds_list', JSON.stringify(response.sounds))
+          }
+        }
+      } catch (error: any) {
+        this.error = error.data?.message || 'Failed to fetch sounds'
+        console.error('Error fetching sounds:', error)
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async uploadSound(soundData: FormData) {
+      this.loading = true
+      this.error = null
+      try {
+        const response = await $fetch('/api/sounds/upload-local', {
+          method: 'POST',
+          body: soundData
+        }) as any
+
+        if (response.success) {
+          // 新しくアップロードされた音源を一覧の先頭に追加
+          this.sounds.unshift(response.sound)
+          return { success: true, sound: response.sound }
+        }
+        return { success: false, error: 'Upload failed' }
+      } catch (error: any) {
+        this.error = error.data?.message || 'Upload failed'
+        return { success: false, error: this.error }
+      } finally {
+        this.loading = false
+      }
+    },
+
+    addSound(sound: Sound) {
+      this.sounds.unshift(sound)
+    },
+
+    removeSound(soundId: string) {
+      const index = this.sounds.findIndex(sound => sound.id === soundId)
+      if (index !== -1) {
+        this.sounds.splice(index, 1)
+      }
+    },
+
+    clearError() {
+      this.error = null
+    }
+  }
+})
+</file>
+
+<file path=".cursorrules">
+# Pathfinder Audio App - Cursor Rules
+
+## プロジェクト概要
+- Nuxt4 + Vercel Blob + PostgreSQL 音源アプリ
+- 認証: JWT + bcrypt
+- 状態管理: Pinia + sessionStorage
+- データベース: DDL直接実行（ORM不使用）
+- ファイルストレージ: 開発環境はローカル、本番はVercel Blob
+
+## 技術スタック
+- **フロントエンド**: Nuxt 4, Vue 3, TypeScript, Pinia
+- **バックエンド**: Nuxt Nitro, Node.js
+- **データベース**: PostgreSQL
+- **ストレージ**: Vercel Blob (本番), ローカルファイルシステム (開発)
+- **認証**: JWT, bcrypt
+- **パッケージマネージャー**: pnpm
+
+## コーディング規約
+- TypeScript厳格モード
+- Vue 3 Composition API
+- Nuxt 4の規約に準拠
+- 日本語コメント推奨
+- エラーハンドリングは適切に実装
+
+## ファイル構造
+- `app/`: フロントエンド（Vue、Pinia、ページ、コンポーネント）
+- `server/`: バックエンド（API、ミドルウェア、ユーティリティ）
+- `database/`: SQLスキーマと初期化スクリプト
+- `storage/`: ローカル開発用ファイル保存（uploads, thumbnails）
+- `public/`: 静的ファイル
+
+## 命名規則
+- コンポーネント: PascalCase (例: AuthForm.vue)
+- ファイル: kebab-case (例: auth-form.vue)
+- 関数: camelCase (例: handleAuthSuccess)
+- 定数: UPPER_SNAKE_CASE (例: JWT_SECRET)
+- データベーステーブル: snake_case (例: login_accounts)
+
+## API設計原則
+- RESTful API設計
+- 適切なHTTPステータスコード
+- エラーレスポンスの統一
+- JWT認証の適切な実装
+
+## 状態管理
+- Piniaストアを使用
+- sessionStorageでページリロード時の状態保持
+- ストアは`app/stores/`ディレクトリに配置
+
+## セキュリティ
+- パスワードはbcryptでハッシュ化
+- JWTトークンの適切な管理
+- ファイルアップロードの検証
+- SQLインジェクション対策
+
+## 開発環境
+- ローカル開発時は`storage/`ディレクトリを使用
+- 本番環境ではVercel Blobを使用
+- 環境変数は`.env`で管理
+- データベース接続は`runtimeConfig`で管理
+
+## テストとデバッグ
+- 開発サーバー起動: `pnpm dev`
+- データベース初期化: `psql -d pathfinder -f database/init.sql`
+- ログは適切に出力
+- エラーハンドリングは詳細に実装
+</file>
+
 <file path="app/assets/css/style.css">
 @import "tailwindcss";
 </file>
 
-<file path="app/pages/index.vue">
-<script setup lang="ts"></script>
-
+<file path="app/components/AuthForm.vue">
 <template>
-  <h1 class="text-3xl font-bold underline">
-    index
-  </h1>
+  <div class="auth-form">
+    <div class="tabs">
+      <button 
+        :class="{ active: isLogin }" 
+        @click="isLogin = true"
+        class="tab-btn"
+      >
+        ログイン
+      </button>
+      <button 
+        :class="{ active: !isLogin }" 
+        @click="isLogin = false"
+        class="tab-btn"
+      >
+        新規登録
+      </button>
+    </div>
+
+    <form @submit.prevent="handleSubmit" class="form">
+      <div class="form-group">
+        <label for="email">メールアドレス</label>
+        <input
+          id="email"
+          v-model="form.email"
+          type="email"
+          required
+          class="input"
+          placeholder="example@example.com"
+        />
+      </div>
+
+      <div class="form-group">
+        <label for="password">パスワード</label>
+        <input
+          id="password"
+          v-model="form.password"
+          type="password"
+          required
+          class="input"
+          placeholder="パスワードを入力"
+        />
+      </div>
+
+      <div v-if="!isLogin" class="form-group">
+        <label for="displayName">表示名（任意）</label>
+        <input
+          id="displayName"
+          v-model="form.displayName"
+          type="text"
+          class="input"
+          placeholder="表示名を入力"
+        />
+      </div>
+
+      <button type="submit" class="submit-btn" :disabled="loading">
+        {{ loading ? '処理中...' : (isLogin ? 'ログイン' : '新規登録') }}
+      </button>
+    </form>
+
+    <div v-if="error" class="error">
+      {{ error }}
+    </div>
+  </div>
 </template>
 
-<style scoped></style>
+<script setup lang="ts">
+const isLogin = ref(true)
+const loading = ref(false)
+const error = ref('')
+
+const form = reactive({
+  email: '',
+  password: '',
+  displayName: ''
+})
+
+const emit = defineEmits<{
+  success: [user: any]
+}>()
+
+const handleSubmit = async () => {
+  try {
+    loading.value = true
+    error.value = ''
+
+    const endpoint = isLogin.value ? '/api/auth/login' : '/api/auth/register'
+    const payload = isLogin.value 
+      ? { email: form.email, password: form.password }
+      : { email: form.email, password: form.password, displayName: form.displayName }
+
+    const response = await $fetch(endpoint, {
+      method: 'POST',
+      body: payload
+    })
+
+    if (response.success) {
+      emit('success', response.user)
+      // フォームをリセット
+      form.email = ''
+      form.password = ''
+      form.displayName = ''
+    }
+  } catch (err: any) {
+    error.value = err.data?.message || 'エラーが発生しました'
+  } finally {
+    loading.value = false
+  }
+}
+</script>
+
+<style scoped>
+.auth-form {
+  max-width: 400px;
+  margin: 0 auto;
+  padding: 2rem;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+}
+
+.tabs {
+  display: flex;
+  margin-bottom: 2rem;
+  border-bottom: 2px solid #e5e7eb;
+}
+
+.tab-btn {
+  flex: 1;
+  padding: 1rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  color: #6b7280;
+  transition: all 0.2s;
+}
+
+.tab-btn.active {
+  color: #3b82f6;
+  border-bottom: 2px solid #3b82f6;
+}
+
+.form-group {
+  margin-bottom: 1.5rem;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+  color: #374151;
+}
+
+.input {
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 1rem;
+  transition: border-color 0.2s;
+}
+
+.input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.submit-btn {
+  width: 100%;
+  padding: 0.75rem;
+  background: #3b82f6;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.submit-btn:hover:not(:disabled) {
+  background: #2563eb;
+}
+
+.submit-btn:disabled {
+  background: #9ca3af;
+  cursor: not-allowed;
+}
+
+.error {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  background: #fef2f2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  text-align: center;
+}
+</style>
 </file>
 
-<file path="app/app.vue">
+<file path="app/components/SoundPlayer.vue">
 <template>
+  <div class="sound-player">
+    <div class="sound-info">
+      <h3>{{ sound.title }}</h3>
+      <p v-if="sound.description" class="description">{{ sound.description }}</p>
+      
+      <div v-if="sound.tags && sound.tags.length > 0" class="tags">
+        <span 
+          v-for="tag in sound.tags" 
+          :key="tag" 
+          class="tag"
+        >
+          {{ tag }}
+        </span>
+      </div>
 
-    <!-- <NuxtRouteAnnouncer />
-    <NuxtWelcome /> -->
-    <!-- <h1 class="text-3xl font-bold underline">
-    Hello world!
-    </h1> -->
-  <NuxtLayout>
-    <NuxtPage />
-  </NuxtLayout>
+      <div class="metadata">
+        <span v-if="sound.durationSeconds" class="duration">
+          長さ: {{ formatDuration(sound.durationSeconds) }}
+        </span>
+        <span v-if="sound.bitrateKbps" class="bitrate">
+          ビットレート: {{ sound.bitrateKbps }} kbps
+        </span>
+      </div>
+    </div>
 
+    <div class="player-controls">
+      <audio
+        ref="audioElement"
+        :src="sound.blobUrl"
+        controls
+        class="audio-player"
+        @loadedmetadata="onAudioLoaded"
+        @timeupdate="onTimeUpdate"
+        @ended="onAudioEnded"
+      >
+        お使いのブラウザは音声再生をサポートしていません。
+      </audio>
 
+      <div class="progress-info">
+        <span v-if="currentTime > 0" class="current-time">
+          {{ formatTime(currentTime) }}
+        </span>
+        <span v-if="duration > 0" class="total-duration">
+          / {{ formatTime(duration) }}
+        </span>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button 
+        @click="handleDownload" 
+        class="download-btn"
+        :disabled="downloading"
+      >
+        {{ downloading ? 'ダウンロード中...' : 'ダウンロード' }}
+      </button>
+    </div>
+  </div>
 </template>
+
+<script setup lang="ts">
+interface Sound {
+  id: string
+  title: string
+  description?: string
+  tags?: string[]
+  durationSeconds?: number
+  bitrateKbps?: number
+  blobUrl: string
+  thumbnailBlobUrl?: string
+  isPublic: boolean
+  createdAt: string
+}
+
+const props = defineProps<{
+  sound: Sound
+}>()
+
+const audioElement = ref<HTMLAudioElement>()
+const currentTime = ref(0)
+const duration = ref(0)
+const downloading = ref(false)
+
+const onAudioLoaded = () => {
+  if (audioElement.value) {
+    duration.value = audioElement.value.duration
+  }
+}
+
+const onTimeUpdate = () => {
+  if (audioElement.value) {
+    currentTime.value = audioElement.value.currentTime
+  }
+}
+
+const onAudioEnded = () => {
+  currentTime.value = 0
+}
+
+const formatDuration = (seconds: number): string => {
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = Math.floor(seconds % 60)
+  return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`
+}
+
+const formatTime = (seconds: number): string => {
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = Math.floor(seconds % 60)
+  return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`
+}
+
+const handleDownload = async () => {
+  try {
+    downloading.value = true
+    
+    const response = await $fetch(`/api/sounds/${props.sound.id}/download`, {
+      method: 'GET'
+    })
+
+    if (response.success) {
+      // ダウンロードリンクを作成
+      const link = document.createElement('a')
+      link.href = response.downloadUrl
+      link.download = response.filename
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+    }
+  } catch (error: any) {
+    console.error('ダウンロードエラー:', error)
+    alert('ダウンロードに失敗しました')
+  } finally {
+    downloading.value = false
+  }
+}
+</script>
+
+<style scoped>
+.sound-player {
+  max-width: 600px;
+  margin: 0 auto;
+  padding: 2rem;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+}
+
+.sound-info {
+  margin-bottom: 2rem;
+}
+
+.sound-info h3 {
+  margin-bottom: 1rem;
+  color: #1f2937;
+  font-size: 1.5rem;
+}
+
+.description {
+  margin-bottom: 1rem;
+  color: #6b7280;
+  line-height: 1.6;
+}
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.tag {
+  padding: 0.25rem 0.75rem;
+  background: #e0f2fe;
+  color: #0369a1;
+  border-radius: 20px;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.metadata {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.875rem;
+  color: #6b7280;
+}
+
+.player-controls {
+  margin-bottom: 2rem;
+}
+
+.audio-player {
+  width: 100%;
+  margin-bottom: 1rem;
+}
+
+.progress-info {
+  text-align: center;
+  font-size: 0.875rem;
+  color: #6b7280;
+}
+
+.current-time,
+.total-duration {
+  font-family: monospace;
+}
+
+.actions {
+  display: flex;
+  justify-content: center;
+}
+
+.download-btn {
+  padding: 0.75rem 1.5rem;
+  background: #3b82f6;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.download-btn:hover:not(:disabled) {
+  background: #2563eb;
+}
+
+.download-btn:disabled {
+  background: #9ca3af;
+  cursor: not-allowed;
+}
+</style>
+</file>
+
+<file path="app/layouts/default.vue">
+<template>
+    <div class="min-h-screen bg-[url('/background.png')]">
+      <!-- 共通ヘッダー -->
+      <header class="flex justify-between items-center p-3 bg-sky-700/40 text-white sticky top-0 left-0 w-full backdrop-blur-md">
+
+      </header>
+      <!-- 各ページの内容が入る -->
+      <main class="p-4">
+        <slot />
+      </main>
+      <footer class="inset-x-0 bottom-0 bg-sky-700/40 text-white text-center py-2 backdrop-blur-md">
+        <span class="text-sm">&copy; 2025- PATHFINDER. All rights reserved.</span>
+      </footer>
+    </div>
+  </template>
+</file>
+
+<file path="database/init.sql">
+-- Pathfinder 音源アプリ データベース初期化スクリプト
+
+-- LoginAccounts table
+CREATE TABLE login_accounts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  email text UNIQUE NOT NULL,
+  password_hash text NOT NULL,
+  display_name text,
+  created_at timestamptz DEFAULT now()
+);
+
+-- Sounds table
+CREATE TABLE sounds (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  title text NOT NULL,
+  description text,
+  tags text[],
+  duration_seconds numeric,
+  bitrate_kbps integer,
+  blob_url text NOT NULL,
+  thumbnail_blob_url text,
+  is_public boolean DEFAULT true,
+  author_id uuid REFERENCES login_accounts(id) ON DELETE SET NULL,
+  created_at timestamptz DEFAULT now()
+);
+
+-- インデックスの作成
+CREATE INDEX idx_sounds_author_id ON sounds(author_id);
+CREATE INDEX idx_sounds_is_public ON sounds(is_public);
+CREATE INDEX idx_sounds_created_at ON sounds(created_at);
+CREATE INDEX idx_login_accounts_email ON login_accounts(email);
 </file>
 
 <file path="public/robots.txt">
@@ -96,152 +930,620 @@ User-Agent: *
 Disallow:
 </file>
 
-<file path=".gitignore">
-# Nuxt dev/build outputs
-.output
-.data
-.nuxt
-.nitro
-.cache
-dist
+<file path="server/api/auth/me.get.ts">
+import { query } from '../../utils/db'
+import jwt from 'jsonwebtoken'
 
-# Node dependencies
-node_modules
+export default defineEventHandler(async (event) => {
+  try {
+    // Cookieからトークンを取得
+    const token = getCookie(event, 'Authorization')
+    
+    if (!token || !token.startsWith('Bearer ')) {
+      throw createError({
+        statusCode: 401,
+        message: 'No valid token provided'
+      })
+    }
 
-# Logs
-logs
-*.log
+    const tokenValue = token.replace('Bearer ', '')
+    
+    // JWTトークンの検証
+    const decoded = jwt.verify(tokenValue, process.env.JWT_SECRET!) as any
+    
+    // ユーザー情報の取得
+    const result = await query(
+      'SELECT id, email, display_name, created_at FROM login_accounts WHERE id = $1',
+      [decoded.id]
+    )
 
-# Misc
-.DS_Store
-.fleet
-.idea
+    if (!result.rows.length) {
+      throw createError({
+        statusCode: 401,
+        message: 'User not found'
+      })
+    }
 
-# Local env files
-.env
-.env.*
-!.env.example
-</file>
+    const user = result.rows[0]
 
-<file path="nuxt.config.ts">
-import tailwindcss from "@tailwindcss/vite";
-
-export default defineNuxtConfig({
-  compatibilityDate: '2025-07-15',
-  devtools: { enabled: true },
-  css: ['~/assets/css/style.css'],
-  vite: {
-    plugins: [
-      tailwindcss(),
-    ],
-  },
-  modules: ['@nuxt/test-utils', '@nuxt/ui'],
-  // content: {
-  // },
-});
-</file>
-
-<file path="package.json">
-{
-  "name": "nuxt-app",
-  "type": "module",
-  "private": true,
-  "scripts": {
-    "build": "nuxt build",
-    "dev": "nuxt dev",
-    "generate": "nuxt generate",
-    "preview": "nuxt preview",
-    "postinstall": "nuxt prepare"
-  },
-  "dependencies": {
-    "@nuxt/test-utils": "3.19.2",
-    "@nuxt/ui": "3.3.0",
-    "@tailwindcss/vite": "^4.1.11",
-    "nuxt": "^4.0.3",
-    "tailwindcss": "^4.1.11",
-    "typescript": "^5.6.3",
-    "vue": "^3.5.18",
-    "vue-router": "^4.5.1"
+    return {
+      success: true,
+      user: {
+        id: user.id,
+        email: user.email,
+        displayName: user.display_name,
+        createdAt: user.created_at
+      }
+    }
+  } catch (error: any) {
+    if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+      throw createError({
+        statusCode: 401,
+        message: 'Invalid or expired token'
+      })
+    }
+    
+    if (error.statusCode) {
+      throw error
+    }
+    
+    throw createError({
+      statusCode: 500,
+      message: 'Internal server error'
+    })
   }
+})
+</file>
+
+<file path="server/api/sounds/[id]/download.get.ts">
+import { query } from '../../../utils/db'
+import jwt from 'jsonwebtoken'
+
+export default defineEventHandler(async (event) => {
+  try {
+    // Cookieからトークンを取得
+    const token = getCookie(event, 'Authorization')
+    
+    if (!token || !token.startsWith('Bearer ')) {
+      throw createError({
+        statusCode: 401,
+        message: 'Authentication required'
+      })
+    }
+
+    const tokenValue = token.replace('Bearer ', '')
+    
+    // JWTトークンの検証
+    const decoded = jwt.verify(tokenValue, process.env.JWT_SECRET!) as any
+    
+    const id = getRouterParam(event, 'id')
+    
+    if (!id) {
+      throw createError({
+        statusCode: 400,
+        message: 'Sound ID is required'
+      })
+    }
+
+    // 音源の情報を取得
+    const result = await query(
+      'SELECT * FROM sounds WHERE id = $1',
+      [id]
+    )
+
+    if (!result.rows.length) {
+      throw createError({
+        statusCode: 404,
+        message: 'Sound not found'
+      })
+    }
+
+    const sound = result.rows[0]
+
+    // ダウンロード用のBlob URLを返す
+    return {
+      success: true,
+      downloadUrl: sound.blob_url,
+      filename: `${sound.title}.mp3` // 適切な拡張子に変更する必要があります
+    }
+  } catch (error: any) {
+    if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+      throw createError({
+        statusCode: 401,
+        message: 'Invalid or expired token'
+      })
+    }
+    
+    if (error.statusCode) {
+      throw error
+    }
+    
+    throw createError({
+      statusCode: 500,
+      message: 'Internal server error'
+    })
+  }
+})
+</file>
+
+<file path="server/api/sounds/[id]/stream.get.ts">
+import { query } from '../../../utils/db'
+
+export default defineEventHandler(async (event) => {
+  try {
+    const id = getRouterParam(event, 'id')
+    
+    if (!id) {
+      throw createError({
+        statusCode: 400,
+        message: 'Sound ID is required'
+      })
+    }
+
+    // 音源の情報を取得
+    const result = await query(
+      'SELECT * FROM sounds WHERE id = $1 AND is_public = true',
+      [id]
+    )
+
+    if (!result.rows.length) {
+      throw createError({
+        statusCode: 404,
+        message: 'Sound not found or not public'
+      })
+    }
+
+    const sound = result.rows[0]
+
+    return {
+      success: true,
+      sound: {
+        id: sound.id,
+        title: sound.title,
+        description: sound.description,
+        tags: sound.tags,
+        durationSeconds: sound.duration_seconds,
+        bitrateKbps: sound.bitrate_kbps,
+        blobUrl: sound.blob_url,
+        thumbnailBlobUrl: sound.thumbnail_blob_url,
+        isPublic: sound.is_public,
+        createdAt: sound.created_at
+      }
+    }
+  } catch (error: any) {
+    if (error.statusCode) {
+      throw error
+    }
+    
+    throw createError({
+      statusCode: 500,
+      message: 'Internal server error'
+    })
+  }
+})
+</file>
+
+<file path="server/api/sounds/list.get.ts">
+import { query } from '../../utils/db'
+
+export default defineEventHandler(async (event) => {
+  try {
+    // クエリパラメータを取得
+    const queryParams = getQuery(event)
+    const limit = parseInt(queryParams.limit as string) || 50
+    const offset = parseInt(queryParams.offset as string) || 0
+    const authorId = queryParams.authorId as string
+
+    let sql = `
+      SELECT 
+        s.id, s.title, s.description, s.tags, 
+        s.duration_seconds, s.bitrate_kbps, s.blob_url, 
+        s.thumbnail_blob_url, s.is_public, s.created_at,
+        u.email as author_email, u.display_name as author_display_name
+      FROM sounds s
+      LEFT JOIN login_accounts u ON s.author_id = u.id
+      WHERE s.is_public = true
+    `
+    
+    const params: any[] = []
+    let paramIndex = 1
+
+    if (authorId) {
+      sql += ` AND s.author_id = $${paramIndex}`
+      params.push(authorId)
+      paramIndex++
+    }
+
+    sql += ` ORDER BY s.created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`
+    params.push(limit, offset)
+
+    const result = await query(sql, params)
+
+    const sounds = result.rows.map(row => ({
+      id: row.id,
+      title: row.title,
+      description: row.description,
+      tags: row.tags || [],
+      durationSeconds: row.duration_seconds,
+      bitrateKbps: row.bitrate_kbps,
+      blobUrl: row.blob_url,
+      thumbnailBlobUrl: row.thumbnail_blob_url,
+      isPublic: row.is_public,
+      createdAt: row.created_at,
+      author: {
+        email: row.author_email,
+        displayName: row.author_display_name
+      }
+    }))
+
+    return {
+      success: true,
+      sounds,
+      pagination: {
+        limit,
+        offset,
+        total: sounds.length
+      }
+    }
+  } catch (error: any) {
+    console.error('List sounds error:', error)
+    throw createError({
+      statusCode: 500,
+      message: 'Internal server error'
+    })
+  }
+})
+</file>
+
+<file path="server/api/sounds/metadata.post.ts">
+import { query } from '../../utils/db'
+import jwt from 'jsonwebtoken'
+
+export default defineEventHandler(async (event) => {
+  try {
+    // Cookieからトークンを取得
+    const token = getCookie(event, 'Authorization')
+    
+    if (!token || !token.startsWith('Bearer ')) {
+      throw createError({
+        statusCode: 401,
+        message: 'Authentication required'
+      })
+    }
+
+    const tokenValue = token.replace('Bearer ', '')
+    
+    // JWTトークンの検証
+    const decoded = jwt.verify(tokenValue, process.env.JWT_SECRET!) as any
+    
+    const body = await readBody(event)
+    const { 
+      title, 
+      description, 
+      tags, 
+      durationSeconds, 
+      bitrateKbps, 
+      blobUrl, 
+      thumbnailBlobUrl, 
+      isPublic 
+    } = body
+
+    if (!title || !blobUrl) {
+      throw createError({
+        statusCode: 400,
+        message: 'Title and blob URL are required'
+      })
+    }
+
+    // 音源のメタデータをデータベースに保存
+    const result = await query(
+      `INSERT INTO sounds (
+        title, description, tags, duration_seconds, bitrate_kbps, 
+        blob_url, thumbnail_blob_url, is_public, author_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
+      RETURNING id, title, created_at`,
+      [
+        title,
+        description || null,
+        tags || [],
+        durationSeconds || null,
+        bitrateKbps || null,
+        blobUrl,
+        thumbnailBlobUrl || null,
+        isPublic !== undefined ? isPublic : true,
+        decoded.id
+      ]
+    )
+
+    return {
+      success: true,
+      sound: {
+        id: result.rows[0].id,
+        title: result.rows[0].title,
+        createdAt: result.rows[0].created_at
+      }
+    }
+  } catch (error: any) {
+    if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+      throw createError({
+        statusCode: 401,
+        message: 'Invalid or expired token'
+      })
+    }
+    
+    if (error.statusCode) {
+      throw error
+    }
+    
+    throw createError({
+      statusCode: 500,
+      message: 'Internal server error'
+    })
+  }
+})
+</file>
+
+<file path="server/api/sounds/upload-local.post.ts">
+import { saveFile, generateUniqueFilename } from '../../utils/localStorage'
+import jwt from 'jsonwebtoken'
+
+export default defineEventHandler(async (event) => {
+  try {
+    // Cookieからトークンを取得
+    const token = getCookie(event, 'Authorization')
+    
+    if (!token || !token.startsWith('Bearer ')) {
+      throw createError({
+        statusCode: 401,
+        message: 'Authentication required'
+      })
+    }
+
+    const tokenValue = token.replace('Bearer ', '')
+    
+    // JWTトークンの検証
+    const decoded = jwt.verify(tokenValue, process.env.JWT_SECRET!) as any
+    
+    // マルチパートフォームデータを処理
+    const formData = await readMultipartFormData(event)
+    
+    if (!formData) {
+      throw createError({
+        statusCode: 400,
+        message: 'No form data provided'
+      })
+    }
+
+    let audioFile: any = null
+    let title = ''
+    let description = ''
+    let tags = ''
+    let isPublic = 'true'
+
+    // フォームデータから各フィールドを抽出
+    for (const field of formData) {
+      if (field.name === 'audioFile' && field.filename) {
+        audioFile = field
+      } else if (field.name === 'title') {
+        title = field.data.toString()
+      } else if (field.name === 'description') {
+        description = field.data.toString()
+      } else if (field.name === 'tags') {
+        tags = field.data.toString()
+      } else if (field.name === 'isPublic') {
+        isPublic = field.data.toString()
+      }
+    }
+
+    if (!audioFile || !title) {
+      throw createError({
+        statusCode: 400,
+        message: 'Audio file and title are required'
+      })
+    }
+
+    // ファイル名を生成
+    const filename = generateUniqueFilename(audioFile.filename)
+    
+    // ファイルをローカルストレージに保存
+    const fileUrl = await saveFile(audioFile.data, filename, 'upload')
+    
+    // 音源のメタデータをデータベースに保存
+    const { query } = await import('../../utils/db')
+    
+    const result = await query(
+      `INSERT INTO sounds (
+        title, description, tags, blob_url, is_public, author_id
+      ) VALUES ($1, $2, $3, $4, $5, $6) 
+      RETURNING id, title, created_at`,
+      [
+        title,
+        description || null,
+        tags ? tags.split(',').map(tag => tag.trim()) : [],
+        fileUrl,
+        isPublic === 'true',
+        decoded.id
+      ]
+    )
+
+    return {
+      success: true,
+      sound: {
+        id: result.rows[0].id,
+        title: result.rows[0].title,
+        createdAt: result.rows[0].created_at,
+        blobUrl: fileUrl
+      }
+    }
+  } catch (error: any) {
+    if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+      throw createError({
+        statusCode: 401,
+        message: 'Invalid or expired token'
+      })
+    }
+    
+    if (error.statusCode) {
+      throw error
+    }
+    
+    console.error('Upload error:', error)
+    throw createError({
+      statusCode: 500,
+      message: 'Internal server error'
+    })
+  }
+})
+</file>
+
+<file path="server/api/sounds/upload-url.post.ts">
+import { put } from '@vercel/blob'
+import jwt from 'jsonwebtoken'
+
+export default defineEventHandler(async (event) => {
+  try {
+    // Cookieからトークンを取得
+    const token = getCookie(event, 'Authorization')
+    
+    if (!token || !token.startsWith('Bearer ')) {
+      throw createError({
+        statusCode: 401,
+        message: 'Authentication required'
+      })
+    }
+
+    const tokenValue = token.replace('Bearer ', '')
+    
+    // JWTトークンの検証
+    const decoded = jwt.verify(tokenValue, process.env.JWT_SECRET!) as any
+    
+    const body = await readBody(event)
+    const { filename, contentType } = body
+
+    if (!filename || !contentType) {
+      throw createError({
+        statusCode: 400,
+        message: 'Filename and content type are required'
+      })
+    }
+
+    // Vercel Blobの署名付きURLを生成
+    const blob = await put(filename, null, {
+      access: 'public',
+      token: process.env.BLOB_READ_WRITE_TOKEN
+    })
+
+    return {
+      success: true,
+      uploadUrl: blob.uploadUrl,
+      url: blob.url
+    }
+  } catch (error: any) {
+    if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+      throw createError({
+        statusCode: 401,
+        message: 'Invalid or expired token'
+      })
+    }
+    
+    if (error.statusCode) {
+      throw error
+    }
+    
+    throw createError({
+      statusCode: 500,
+      message: 'Internal server error'
+    })
+  }
+})
+</file>
+
+<file path="server/utils/localStorage.ts">
+import { writeFile, unlink, readFile } from 'fs/promises'
+import { existsSync } from 'fs'
+import path from 'path'
+import { randomUUID } from 'crypto'
+
+const STORAGE_PATH = path.join(process.cwd(), 'storage')
+const UPLOADS_PATH = path.join(STORAGE_PATH, 'uploads')
+const THUMBNAILS_PATH = path.join(STORAGE_PATH, 'thumbnails')
+
+// ディレクトリが存在しない場合は作成
+const ensureDirectories = () => {
+  if (!existsSync(STORAGE_PATH)) {
+    require('fs').mkdirSync(STORAGE_PATH, { recursive: true })
+  }
+  if (!existsSync(UPLOADS_PATH)) {
+    require('fs').mkdirSync(UPLOADS_PATH, { recursive: true })
+  }
+  if (!existsSync(THUMBNAILS_PATH)) {
+    require('fs').mkdirSync(THUMBNAILS_PATH, { recursive: true })
+  }
+}
+
+// ファイルを保存
+export const saveFile = async (file: Buffer, filename: string, type: 'upload' | 'thumbnail' = 'upload'): Promise<string> => {
+  ensureDirectories()
+  
+  const storagePath = type === 'upload' ? UPLOADS_PATH : THUMBNAILS_PATH
+  const filePath = path.join(storagePath, filename)
+  
+  await writeFile(filePath, file)
+  
+  // 開発環境用のローカルURLを返す
+  const baseUrl = process.env.NODE_ENV === 'production' 
+    ? process.env.BASE_URL || 'http://localhost:3000'
+    : 'http://localhost:3000'
+  
+  return `${baseUrl}/storage/${type === 'upload' ? 'uploads' : 'thumbnails'}/${filename}`
+}
+
+// ファイルを削除
+export const deleteFile = async (filename: string, type: 'upload' | 'thumbnail' = 'upload'): Promise<void> => {
+  const storagePath = type === 'upload' ? UPLOADS_PATH : THUMBNAILS_PATH
+  const filePath = path.join(storagePath, filename)
+  
+  if (existsSync(filePath)) {
+    await unlink(filePath)
+  }
+}
+
+// ファイルの存在確認
+export const fileExists = (filename: string, type: 'upload' | 'thumbnail' = 'upload'): boolean => {
+  const storagePath = type === 'upload' ? UPLOADS_PATH : THUMBNAILS_PATH
+  const filePath = path.join(storagePath, filename)
+  return existsSync(filePath)
+}
+
+// ファイルを読み込み
+export const readFileContent = async (filename: string, type: 'upload' | 'thumbnail' = 'upload'): Promise<Buffer> => {
+  const storagePath = type === 'upload' ? UPLOADS_PATH : THUMBNAILS_PATH
+  const filePath = path.join(storagePath, filename)
+  
+  if (!existsSync(filePath)) {
+    throw new Error('File not found')
+  }
+  
+  return await readFile(filePath)
+}
+
+// ユニークなファイル名を生成
+export const generateUniqueFilename = (originalName: string): string => {
+  const ext = path.extname(originalName)
+  const name = path.basename(originalName, ext)
+  const uuid = randomUUID()
+  return `${name}_${uuid}${ext}`
 }
 </file>
 
-<file path="README.md">
-# Nuxt Minimal Starter
+<file path="storage/thumbnails/.gitkeep">
+# This file ensures the thumbnails directory is tracked by Git
+# Actual thumbnail files will be ignored
+</file>
 
-Look at the [Nuxt documentation](https://nuxt.com/docs/getting-started/introduction) to learn more.
-
-## Setup
-
-Make sure to install dependencies:
-
-```bash
-# npm
-npm install
-
-# pnpm
-pnpm install
-
-# yarn
-yarn install
-
-# bun
-bun install
-```
-
-## Development Server
-
-Start the development server on `http://localhost:3000`:
-
-```bash
-# npm
-npm run dev
-
-# pnpm
-pnpm dev
-
-# yarn
-yarn dev
-
-# bun
-bun run dev
-```
-
-## Production
-
-Build the application for production:
-
-```bash
-# npm
-npm run build
-
-# pnpm
-pnpm build
-
-# yarn
-yarn build
-
-# bun
-bun run build
-```
-
-Locally preview production build:
-
-```bash
-# npm
-npm run preview
-
-# pnpm
-pnpm preview
-
-# yarn
-yarn preview
-
-# bun
-bun run preview
-```
-
-Check out the [deployment documentation](https://nuxt.com/docs/getting-started/deployment) for more information.
+<file path="storage/uploads/.gitkeep">
+# This file ensures the uploads directory is tracked by Git
+# Actual uploaded files will be ignored
 </file>
 
 <file path="tsconfig.json">
@@ -262,6 +1564,1073 @@ Check out the [deployment documentation](https://nuxt.com/docs/getting-started/d
       "path": "./.nuxt/tsconfig.node.json"
     }
   ]
+}
+</file>
+
+<file path="app/components/SoundUpload.vue">
+<template>
+  <div class="sound-upload">
+    <h3>音源をアップロード</h3>
+    
+    <!-- 環境選択タブ -->
+    <div class="environment-tabs">
+      <button 
+        :class="{ active: useLocalStorage }" 
+        @click="useLocalStorage = true"
+        class="env-tab-btn"
+      >
+        ローカル開発
+      </button>
+      <button 
+        :class="{ active: !useLocalStorage }" 
+        @click="useLocalStorage = false"
+        class="env-tab-btn"
+      >
+        Vercel Blob
+      </button>
+    </div>
+    
+    <form @submit.prevent="handleUpload" class="upload-form">
+      <div class="form-group">
+        <label for="title">タイトル *</label>
+        <input
+          id="title"
+          v-model="form.title"
+          type="text"
+          required
+          class="input"
+          placeholder="音源のタイトルを入力"
+        />
+      </div>
+
+      <div class="form-group">
+        <label for="description">説明</label>
+        <textarea
+          id="description"
+          v-model="form.description"
+          class="textarea"
+          placeholder="音源の説明を入力"
+          rows="3"
+        ></textarea>
+      </div>
+
+      <div class="form-group">
+        <label for="tags">タグ（カンマ区切り）</label>
+        <input
+          id="tags"
+          v-model="form.tags"
+          type="text"
+          class="input"
+          placeholder="タグ1, タグ2, タグ3"
+        />
+      </div>
+
+      <div class="form-group">
+        <label for="audioFile">音源ファイル *</label>
+        <input
+          id="audioFile"
+          ref="fileInput"
+          type="file"
+          accept="audio/*"
+          required
+          class="file-input"
+          @change="handleFileSelect"
+        />
+        <div v-if="selectedFile" class="file-info">
+          選択されたファイル: {{ selectedFile.name }}
+          <br>
+          <small>サイズ: {{ formatFileSize(selectedFile.size) }}</small>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>
+          <input
+            v-model="form.isPublic"
+            type="checkbox"
+            class="checkbox"
+          />
+          公開する
+        </label>
+      </div>
+
+      <button type="submit" class="upload-btn" :disabled="uploading">
+        {{ uploading ? 'アップロード中...' : 'アップロード' }}
+      </button>
+    </form>
+
+    <div v-if="error" class="error">
+      {{ error }}
+    </div>
+
+    <div v-if="success" class="success">
+      音源のアップロードが完了しました！
+    </div>
+
+    <!-- 環境情報 -->
+    <div class="environment-info">
+      <p><strong>現在の環境:</strong> {{ useLocalStorage ? 'ローカル開発' : 'Vercel Blob' }}</p>
+      <p v-if="useLocalStorage" class="local-info">
+        📁 ファイルは <code>storage/uploads/</code> に保存されます
+      </p>
+      <p v-else class="blob-info">
+        ☁️ ファイルは Vercel Blob に保存されます
+      </p>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+const fileInput = ref<HTMLInputElement>()
+const selectedFile = ref<File | null>(null)
+const uploading = ref(false)
+const error = ref('')
+const success = ref('')
+const useLocalStorage = ref(true) // デフォルトでローカル開発
+
+const form = reactive({
+  title: '',
+  description: '',
+  tags: '',
+  isPublic: true
+})
+
+const emit = defineEmits<{
+  uploaded: [sound: any]
+}>()
+
+const handleFileSelect = (event: Event) => {
+  const target = event.target as HTMLInputElement
+  if (target.files && target.files[0]) {
+    selectedFile.value = target.files[0]
+  }
+}
+
+const formatFileSize = (bytes: number): string => {
+  if (bytes === 0) return '0 Bytes'
+  const k = 1024
+  const sizes = ['Bytes', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+}
+
+const handleUpload = async () => {
+  if (!selectedFile.value) {
+    error.value = 'ファイルを選択してください'
+    return
+  }
+
+  try {
+    uploading.value = true
+    error.value = ''
+    success.value = ''
+
+    if (useLocalStorage.value) {
+      // ローカル開発環境用のアップロード
+      await handleLocalUpload()
+    } else {
+      // Vercel Blob用のアップロード
+      await handleBlobUpload()
+    }
+  } catch (err: any) {
+    error.value = err.data?.message || 'アップロードに失敗しました'
+  } finally {
+    uploading.value = false
+  }
+}
+
+const handleLocalUpload = async () => {
+  // FormDataを作成
+  const formData = new FormData()
+  formData.append('title', form.title)
+  formData.append('description', form.description)
+  formData.append('tags', form.tags)
+  formData.append('audioFile', selectedFile.value!)
+  formData.append('isPublic', form.isPublic.toString())
+
+  const response = await $fetch('/api/sounds/upload-local', {
+    method: 'POST',
+    body: formData
+  }) as any
+
+  if (response.success) {
+    success.value = '音源のアップロードが完了しました！'
+    emit('uploaded', response.sound)
+    resetForm()
+  }
+}
+
+const handleBlobUpload = async () => {
+  // 1. アップロードURLを取得
+  const uploadUrlResponse = await $fetch('/api/sounds/upload-url', {
+    method: 'POST',
+    body: {
+      filename: selectedFile.value!.name,
+      contentType: selectedFile.value!.type
+    }
+  }) as any
+
+  if (!uploadUrlResponse.success) {
+    throw new Error('アップロードURLの取得に失敗しました')
+  }
+
+  // 2. ファイルをVercel Blobにアップロード
+  await fetch(uploadUrlResponse.uploadUrl, {
+    method: 'PUT',
+    body: selectedFile.value
+  })
+
+  // 3. メタデータを保存
+  const tags = form.tags ? form.tags.split(',').map(tag => tag.trim()) : []
+  
+  const metadataResponse = await $fetch('/api/sounds/metadata', {
+    method: 'POST',
+    body: {
+      title: form.title,
+      description: form.description,
+      tags,
+      blobUrl: uploadUrlResponse.url,
+      isPublic: form.isPublic
+    }
+  }) as any
+
+  if (metadataResponse.success) {
+    success.value = '音源のアップロードが完了しました！'
+    emit('uploaded', metadataResponse.sound)
+    resetForm()
+  }
+}
+
+const resetForm = () => {
+  form.title = ''
+  form.description = ''
+  form.tags = ''
+  form.isPublic = true
+  selectedFile.value = null
+  if (fileInput.value) {
+    fileInput.value.value = ''
+  }
+}
+</script>
+
+<style scoped>
+.sound-upload {
+  max-width: 600px;
+  margin: 0 auto;
+  padding: 2rem;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+}
+
+.sound-upload h3 {
+  margin-bottom: 2rem;
+  color: #1f2937;
+  text-align: center;
+}
+
+.environment-tabs {
+  display: flex;
+  margin-bottom: 2rem;
+  background: #f3f4f6;
+  border-radius: 8px;
+  padding: 0.25rem;
+}
+
+.env-tab-btn {
+  flex: 1;
+  padding: 0.75rem 1rem;
+  background: none;
+  border: none;
+  color: #6b7280;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all 0.2s;
+  font-size: 0.875rem;
+}
+
+.env-tab-btn.active {
+  background: #3b82f6;
+  color: white;
+}
+
+.env-tab-btn:hover:not(.active) {
+  background: #e5e7eb;
+}
+
+.upload-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.form-group label {
+  font-weight: 500;
+  color: #374151;
+}
+
+.input,
+.textarea {
+  padding: 0.75rem;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 1rem;
+  transition: border-color 0.2s;
+}
+
+.input:focus,
+.textarea:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.textarea {
+  resize: vertical;
+  min-height: 80px;
+}
+
+.file-input {
+  padding: 0.5rem;
+  border: 2px dashed #d1d5db;
+  border-radius: 6px;
+  background: #f9fafb;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+
+.file-input:hover {
+  border-color: #3b82f6;
+}
+
+.file-info {
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  background: #f0f9ff;
+  color: #0369a1;
+  border-radius: 4px;
+  font-size: 0.875rem;
+}
+
+.checkbox {
+  margin-right: 0.5rem;
+}
+
+.upload-btn {
+  padding: 0.75rem;
+  background: #10b981;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.upload-btn:hover:not(:disabled) {
+  background: #059669;
+}
+
+.upload-btn:disabled {
+  background: #9ca3af;
+  cursor: not-allowed;
+}
+
+.error {
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  background: #fef2f2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  text-align: center;
+}
+
+.success {
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  background: #f0fdf4;
+  color: #16a34a;
+  border: 1px solid #bbf7d0;
+  border-radius: 6px;
+  text-align: center;
+}
+
+.environment-info {
+  padding: 1rem;
+  background: #f8fafc;
+  border-radius: 6px;
+  border-left: 4px solid #3b82f6;
+}
+
+.environment-info p {
+  margin: 0.5rem 0;
+  font-size: 0.875rem;
+  color: #374151;
+}
+
+.environment-info code {
+  background: #e5e7eb;
+  padding: 0.125rem 0.25rem;
+  border-radius: 4px;
+  font-family: monospace;
+}
+
+.local-info {
+  color: #059669;
+}
+
+.blob-info {
+  color: #7c3aed;
+}
+</style>
+</file>
+
+<file path="app/app.vue">
+<template>
+  <NuxtLayout>
+    <NuxtPage />
+  </NuxtLayout>
+</template>
+</file>
+
+<file path="server/api/auth/login.post.ts">
+import { query } from '../../utils/db'
+import bcrypt from 'bcrypt'
+import jwt from 'jsonwebtoken'
+
+export default defineEventHandler(async (event) => {
+  try {
+    const body = await readBody(event)
+    const { email, password } = body
+
+    // バリデーション
+    if (!email || !password) {
+      throw createError({
+        statusCode: 400,
+        message: 'Email and password are required'
+      })
+    }
+
+    // ユーザーの検索
+    const result = await query(
+      'SELECT * FROM login_accounts WHERE email = $1',
+      [email]
+    )
+
+    if (!result.rows.length) {
+      throw createError({
+        statusCode: 401,
+        message: 'Invalid credentials'
+      })
+    }
+
+    const user = result.rows[0]
+
+    // パスワードの検証
+    const match = await bcrypt.compare(password, user.password_hash)
+    if (!match) {
+      throw createError({
+        statusCode: 401,
+        message: 'Invalid credentials'
+      })
+    }
+
+    // JWTトークンの生成
+    const token = jwt.sign(
+      { id: user.id, email: user.email },
+      process.env.JWT_SECRET!,
+      { expiresIn: '7d' }
+    )
+
+    // Cookieにトークンを設定
+    setCookie(event, 'Authorization', `Bearer ${token}`, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 // 7 days
+    })
+
+    return {
+      success: true,
+      user: {
+        id: user.id,
+        email: user.email,
+        displayName: user.display_name
+      }
+    }
+  } catch (error: any) {
+    if (error.statusCode) {
+      throw error
+    }
+    
+    throw createError({
+      statusCode: 500,
+      message: 'Internal server error'
+    })
+  }
+})
+</file>
+
+<file path="server/api/auth/register.post.ts">
+import { query } from '../../utils/db'
+import bcrypt from 'bcrypt'
+
+export default defineEventHandler(async (event) => {
+  try {
+    const body = await readBody(event)
+    const { email, password, displayName } = body
+
+    // バリデーション
+    if (!email || !password) {
+      throw createError({
+        statusCode: 400,
+        message: 'Email and password are required'
+      })
+    }
+
+    // パスワードのハッシュ化
+    const saltRounds = 10
+    const passwordHash = await bcrypt.hash(password, saltRounds)
+
+    // ユーザーの作成
+    const result = await query(
+      'INSERT INTO login_accounts (email, password_hash, display_name) VALUES ($1, $2, $3) RETURNING id, email, display_name, created_at',
+      [email, passwordHash, displayName || null]
+    )
+
+    return {
+      success: true,
+      user: {
+        id: result.rows[0].id,
+        email: result.rows[0].email,
+        displayName: result.rows[0].display_name,
+        createdAt: result.rows[0].created_at
+      }
+    }
+  } catch (error: any) {
+    if (error.code === '23505') { // unique_violation
+      throw createError({
+        statusCode: 409,
+        message: 'Email already exists'
+      })
+    }
+    
+    throw createError({
+      statusCode: 500,
+      message: 'Internal server error'
+    })
+  }
+})
+</file>
+
+<file path="server/utils/db.ts">
+import pg from 'pg'
+
+const config = useRuntimeConfig()
+
+const pool = new pg.Pool({ 
+  connectionString: config.databaseUrl,
+  ssl: config.public.nodeEnv === 'production' ? { rejectUnauthorized: false } : false
+})
+
+export const query = (text: string, params?: any[]) => pool.query(text, params)
+
+export const closePool = () => pool.end()
+</file>
+
+<file path=".gitignore">
+# Nuxt dev/build outputs
+.output
+.data
+.nuxt
+.nitro
+.cache
+dist
+
+# Node dependencies
+node_modules
+
+# Logs
+*.log
+
+# Misc
+.DS_Store
+.fleet
+.idea
+
+# Local env files
+.env
+.env.*
+!.env.example
+
+# Storage directories (for development)
+storage/uploads/*
+storage/thumbnails/*
+!storage/uploads/.gitkeep
+!storage/thumbnails/.gitkeep
+
+# Vercel
+.vercel
+</file>
+
+<file path="nuxt.config.ts">
+import tailwindcss from "@tailwindcss/vite";
+
+export default defineNuxtConfig({
+  compatibilityDate: '2025-07-15',
+  devtools: { enabled: true },
+  css: ['~/assets/css/style.css'],
+  vite: {
+    plugins: [
+      tailwindcss(),
+    ],
+  },
+  modules: ['@nuxt/test-utils', '@nuxt/ui', '@pinia/nuxt'],
+  
+  // 環境変数の設定
+  runtimeConfig: {
+    // サーバーサイドでのみ利用可能
+    databaseUrl: process.env.DATABASE_URL,
+    jwtSecret: process.env.JWT_SECRET,
+    blobReadWriteToken: process.env.BLOB_READ_WRITE_TOKEN,
+    
+    // クライアントサイドでも利用可能
+    public: {
+      nodeEnv: process.env.NODE_ENV
+    }
+  },
+  
+  // content: {
+  // },
+});
+</file>
+
+<file path="README.md">
+# 🎵 Pathfinder - 音源共有アプリ
+
+Nuxt4 + Vercel Blob + PostgreSQL を使用した音源共有アプリケーションです。
+
+## ✨ 機能
+
+- 🔐 JWT認証によるユーザー管理
+- 📤 音源ファイルのアップロード（Vercel Blob）
+- 🎵 音源の再生・ダウンロード
+- 🏷️ タグ付けとメタデータ管理
+- 📱 レスポンシブデザイン
+
+## 🚀 セットアップ
+
+### 1. 依存関係のインストール
+
+```bash
+pnpm install
+```
+
+### 2. 環境変数の設定
+
+`.env` ファイルを作成し、以下の環境変数を設定してください：
+
+```env
+# Database
+DATABASE_URL=postgresql://username:password@localhost:5432/pathfinder
+
+# JWT
+JWT_SECRET=your-super-secret-jwt-key-here
+
+# Vercel Blob
+BLOB_READ_WRITE_TOKEN=your-vercel-blob-token-here
+```
+
+### 3. データベースの初期化
+
+PostgreSQLデータベースに接続し、`database/init.sql` を実行してください：
+
+```bash
+psql -d pathfinder -f database/init.sql
+```
+
+### 4. 開発サーバーの起動
+
+```bash
+pnpm dev
+```
+
+## 🧪 開発環境でのテスト
+
+### ローカルストレージの使用
+
+開発環境では、音源ファイルをローカルの `storage/` ディレクトリに保存できます：
+
+- `storage/uploads/` - 音源ファイル
+- `storage/thumbnails/` - サムネイル画像
+
+これにより、Vercel Blobの設定なしでも音源アップロードのテストが可能です。
+
+### 環境切り替え
+
+アップロード画面で「ローカル開発」と「Vercel Blob」を切り替えてテストできます。
+
+## 🏗️ アーキテクチャ
+
+### バックエンド（Nuxt Nitro API）
+
+- **認証**: JWT + Cookie
+- **データベース**: PostgreSQL（ORM不使用、DDL直書き）
+- **ファイルストレージ**: Vercel Blob
+- **パスワードハッシュ**: bcrypt
+
+### フロントエンド
+
+- **フレームワーク**: Nuxt 4 + Vue 3
+- **スタイリング**: CSS（Tailwind不使用）
+- **状態管理**: Vue Composition API
+
+## 📡 API エンドポイント
+
+| Method | Path | 説明 | 認証 |
+|--------|------|------|------|
+| POST | `/api/auth/register` | 新規ユーザー登録 | ❌ |
+| POST | `/api/auth/login` | JWTログイン | ❌ |
+| GET | `/api/auth/me` | ログインユーザー情報 | ✅ |
+| POST | `/api/sounds/upload-url` | 音源アップロードURL発行 | ✅ |
+| POST | `/api/sounds/metadata` | 音源メタデータ登録 | ✅ |
+| GET | `/api/sounds/:id/stream` | 音源再生 | ❌ |
+| GET | `/api/sounds/:id/download` | 音源ダウンロード | ✅ |
+
+## 🚀 デプロイ
+
+### Vercel
+
+1. Vercel Blobを有効化：
+```bash
+vercel storage link
+```
+
+2. 環境変数を設定：
+   - `DATABASE_URL`
+   - `BLOB_READ_WRITE_TOKEN`
+   - `JWT_SECRET`
+
+3. デプロイ：
+```bash
+vercel --prod
+```
+
+## 🔧 開発
+
+### データベース接続
+
+```typescript
+import { query } from '~/server/utils/db'
+
+// クエリの実行
+const result = await query('SELECT * FROM sounds WHERE is_public = true')
+```
+
+### 認証ミドルウェア
+
+```typescript
+// CookieからJWTトークンを取得
+const token = getCookie(event, 'Authorization')
+if (!token || !token.startsWith('Bearer ')) {
+  throw createError({ statusCode: 401, message: 'Authentication required' })
+}
+```
+
+## 📝 注意事項
+
+- PrismaなどのORMは使用していません
+- マイグレーションはSQLファイルで手動管理
+- 音源ファイルの変換は行わず、オリジナルを配信
+- セキュリティはJWT + Cookieで実装
+
+## 🤝 コントリビューション
+
+1. このリポジトリをフォーク
+2. フィーチャーブランチを作成
+3. 変更をコミット
+4. プルリクエストを作成
+
+## 📄 ライセンス
+
+MIT License
+</file>
+
+<file path="app/pages/index.vue">
+<script setup lang="ts">
+import { useAuthStore } from '~/stores/auth'
+import { useSoundsStore } from '~/stores/sounds'
+
+const authStore = useAuthStore()
+const soundsStore = useSoundsStore()
+
+const activeTab = ref<'upload' | 'browse'>('upload')
+
+// ページ読み込み時にユーザー情報を確認
+onMounted(async () => {
+  await authStore.checkAuth()
+  if (authStore.isLoggedIn) {
+    await soundsStore.fetchSounds()
+  }
+})
+
+const handleAuthSuccess = async () => {
+  await soundsStore.fetchSounds()
+}
+
+const handleLogout = () => {
+  authStore.logout()
+  soundsStore.$reset()
+  activeTab.value = 'upload'
+}
+
+const handleSoundUploaded = async () => {
+  activeTab.value = 'browse'
+}
+</script>
+
+<template>
+  <div class="container">
+    <header class="header">
+      <h1>🎵 Pathfinder - 音源共有アプリ</h1>
+      <p>あなたの音源を世界と共有しましょう</p>
+    </header>
+
+    <main class="main">
+      <!-- 未ログイン時は認証フォームを表示 -->
+      <div v-if="!authStore.isLoggedIn" class="auth-section">
+        <AuthForm @success="handleAuthSuccess" />
+      </div>
+
+      <!-- ログイン後は音源アップロードと再生を表示 -->
+      <div v-else class="user-section">
+        <div class="user-info">
+          <h2>ようこそ、{{ authStore.currentUser?.displayName || authStore.currentUser?.email }}さん！</h2>
+          <button @click="handleLogout" class="logout-btn">ログアウト</button>
+        </div>
+
+        <div class="content-tabs">
+          <button 
+            :class="{ active: activeTab === 'upload' }" 
+            @click="activeTab = 'upload'"
+            class="tab-btn"
+          >
+            音源アップロード
+          </button>
+          <button 
+            :class="{ active: activeTab === 'browse' }" 
+            @click="activeTab = 'browse'"
+            class="tab-btn"
+          >
+            音源を聴く
+          </button>
+        </div>
+
+        <div v-if="activeTab === 'upload'" class="tab-content">
+          <SoundUpload @uploaded="handleSoundUploaded" />
+        </div>
+
+        <div v-else-if="activeTab === 'browse'" class="tab-content">
+          <div v-if="soundsStore.sounds.length === 0" class="no-sounds">
+            <p>まだ音源がアップロードされていません。</p>
+            <p>最初の音源をアップロードしてみましょう！</p>
+          </div>
+          
+          <div v-else class="sounds-list">
+            <SoundPlayer 
+              v-for="sound in soundsStore.sounds" 
+              :key="sound.id" 
+              :sound="sound" 
+            />
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</template>
+
+<style scoped>
+.container {
+  min-height: 100vh;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding: 2rem;
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 3rem;
+  color: white;
+}
+
+.header h1 {
+  font-size: 3rem;
+  margin-bottom: 1rem;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.header p {
+  font-size: 1.25rem;
+  opacity: 0.9;
+}
+
+.main {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.auth-section {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 60vh;
+}
+
+.user-section {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  padding: 2rem;
+  backdrop-filter: blur(10px);
+}
+
+.user-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.user-info h2 {
+  color: white;
+  margin: 0;
+}
+
+.logout-btn {
+  padding: 0.5rem 1rem;
+  background: rgba(255, 255, 255, 0.2);
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.logout-btn:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.content-tabs {
+  display: flex;
+  margin-bottom: 2rem;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 0.25rem;
+}
+
+.tab-btn {
+  flex: 1;
+  padding: 0.75rem 1rem;
+  background: none;
+  border: none;
+  color: white;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all 0.2s;
+}
+
+.tab-btn.active {
+  background: rgba(255, 255, 255, 0.2);
+  color: white;
+}
+
+.tab-btn:hover:not(.active) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.tab-content {
+  background: white;
+  border-radius: 8px;
+  padding: 2rem;
+  min-height: 400px;
+}
+
+.no-sounds {
+  text-align: center;
+  color: #6b7280;
+  padding: 4rem 2rem;
+}
+
+.no-sounds p {
+  margin-bottom: 0.5rem;
+}
+
+.sounds-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+@media (max-width: 768px) {
+  .container {
+    padding: 1rem;
+  }
+  
+  .header h1 {
+    font-size: 2rem;
+  }
+  
+  .user-info {
+    flex-direction: column;
+    gap: 1rem;
+    text-align: center;
+  }
+}
+</style>
+</file>
+
+<file path="package.json">
+{
+  "name": "nuxt-app",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "nuxt build",
+    "dev": "nuxt dev",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare"
+  },
+  "dependencies": {
+    "@nuxt/test-utils": "3.19.2",
+    "@nuxt/ui": "3.3.0",
+    "@pinia/nuxt": "^0.11.2",
+    "@tailwindcss/vite": "^4.1.11",
+    "@vercel/blob": "^1.1.1",
+    "bcrypt": "^6.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "nuxt": "^4.0.3",
+    "pg": "^8.16.3",
+    "pinia": "^3.0.3",
+    "tailwindcss": "^4.1.11",
+    "typescript": "^5.6.3",
+    "vue": "^3.5.18",
+    "vue-router": "^4.5.1"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^6.0.0",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/pg": "^8.15.5"
+  }
 }
 </file>
 
