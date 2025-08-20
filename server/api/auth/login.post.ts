@@ -1,4 +1,4 @@
-import { query } from '~/server/utils/db'
+import { query } from '../../utils/db'
 import bcrypt from 'bcrypt'
 import jwt from 'jsonwebtoken'
 
