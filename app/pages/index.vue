@@ -51,9 +51,10 @@ const handleLogout = () => {
 
 const loadSounds = async () => {
   try {
-    // 実際のAPIが実装されたら、ここで音源一覧を取得
-    // 現在はダミーデータを使用
-    sounds.value = []
+    const response = await $fetch('/api/sounds/list') as any
+    if (response.success) {
+      sounds.value = response.sounds
+    }
   } catch (error) {
     console.error('音源の読み込みに失敗しました:', error)
   }

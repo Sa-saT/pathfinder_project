@@ -47,6 +47,21 @@ psql -d pathfinder -f database/init.sql
 pnpm dev
 ```
 
+## 🧪 開発環境でのテスト
+
+### ローカルストレージの使用
+
+開発環境では、音源ファイルをローカルの `storage/` ディレクトリに保存できます：
+
+- `storage/uploads/` - 音源ファイル
+- `storage/thumbnails/` - サムネイル画像
+
+これにより、Vercel Blobの設定なしでも音源アップロードのテストが可能です。
+
+### 環境切り替え
+
+アップロード画面で「ローカル開発」と「Vercel Blob」を切り替えてテストできます。
+
 ## 🏗️ アーキテクチャ
 
 ### バックエンド（Nuxt Nitro API）
