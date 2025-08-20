@@ -1,67 +1,31 @@
 <script setup lang="ts">
-interface User {
-  id: string
-  email: string
-  displayName?: string
-}
+import { useAuthStore } from '~/stores/auth'
+import { useSoundsStore } from '~/stores/sounds'
 
-interface Sound {
-  id: string
-  title: string
-  description?: string
-  tags?: string[]
-  durationSeconds?: number
-  bitrateKbps?: number
-  blobUrl: string
-  thumbnailBlobUrl?: string
-  isPublic: boolean
-  createdAt: string
-}
+const authStore = useAuthStore()
+const soundsStore = useSoundsStore()
 
-const user = ref<User | null>(null)
 const activeTab = ref<'upload' | 'browse'>('upload')
-const sounds = ref<Sound[]>([])
 
 // ページ読み込み時にユーザー情報を確認
 onMounted(async () => {
-  try {
-    const response = await $fetch('/api/auth/me') as any
-    if (response.success) {
-      user.value = response.user
-      await loadSounds()
-    }
-  } catch (error) {
-    // ログインしていない場合は何もしない
-    console.log('ユーザーはログインしていません')
+  await authStore.checkAuth()
+  if (authStore.isLoggedIn) {
+    await soundsStore.fetchSounds()
   }
 })
 
-const handleAuthSuccess = async (userData: User) => {
-  user.value = userData
-  await loadSounds()
+const handleAuthSuccess = async () => {
+  await soundsStore.fetchSounds()
 }
 
 const handleLogout = () => {
-  // Cookieを削除
-  document.cookie = 'Authorization=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;'
-  user.value = null
-  sounds.value = []
+  authStore.logout()
+  soundsStore.$reset()
   activeTab.value = 'upload'
 }
 
-const loadSounds = async () => {
-  try {
-    const response = await $fetch('/api/sounds/list') as any
-    if (response.success) {
-      sounds.value = response.sounds
-    }
-  } catch (error) {
-    console.error('音源の読み込みに失敗しました:', error)
-  }
-}
-
-const handleSoundUploaded = async (sound: Sound) => {
-  sounds.value.unshift(sound)
+const handleSoundUploaded = async () => {
   activeTab.value = 'browse'
 }
 </script>
@@ -75,14 +39,14 @@ const handleSoundUploaded = async (sound: Sound) => {
 
     <main class="main">
       <!-- 未ログイン時は認証フォームを表示 -->
-      <div v-if="!user" class="auth-section">
+      <div v-if="!authStore.isLoggedIn" class="auth-section">
         <AuthForm @success="handleAuthSuccess" />
       </div>
 
       <!-- ログイン後は音源アップロードと再生を表示 -->
       <div v-else class="user-section">
         <div class="user-info">
-          <h2>ようこそ、{{ user.displayName || user.email }}さん！</h2>
+          <h2>ようこそ、{{ authStore.currentUser?.displayName || authStore.currentUser?.email }}さん！</h2>
           <button @click="handleLogout" class="logout-btn">ログアウト</button>
         </div>
 
@@ -108,14 +72,14 @@ const handleSoundUploaded = async (sound: Sound) => {
         </div>
 
         <div v-else-if="activeTab === 'browse'" class="tab-content">
-          <div v-if="sounds.length === 0" class="no-sounds">
+          <div v-if="soundsStore.sounds.length === 0" class="no-sounds">
             <p>まだ音源がアップロードされていません。</p>
             <p>最初の音源をアップロードしてみましょう！</p>
           </div>
           
           <div v-else class="sounds-list">
             <SoundPlayer 
-              v-for="sound in sounds" 
+              v-for="sound in soundsStore.sounds" 
               :key="sound.id" 
               :sound="sound" 
             />

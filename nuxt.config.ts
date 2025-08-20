@@ -9,7 +9,7 @@ export default defineNuxtConfig({
       tailwindcss(),
     ],
   },
-  modules: ['@nuxt/test-utils', '@nuxt/ui'],
+  modules: ['@nuxt/test-utils', '@nuxt/ui', '@pinia/nuxt'],
   
   // 環境変数の設定
   runtimeConfig: {
